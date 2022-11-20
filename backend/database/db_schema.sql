@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS christmas_files;
+
+CREATE TABLE christmas_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uploaded TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    title TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    uploaded_by TEXT NOT NULL
+);

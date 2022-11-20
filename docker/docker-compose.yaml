@@ -6,7 +6,9 @@
 # rq workers ?
 # 
 
-version: "3.9"
+# TODO: persistent volume
+
+version: "3.9" # ?
 services:
   frontend:
     build: ?
