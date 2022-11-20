@@ -17,10 +17,18 @@ services:
       - "8000:8000"
     env_file:
       - ../backend/.env.prod # TODO
+    networks:
+      - nginx_network
   redis:
     image: "redis:alpine"
+    networks:
+      - nginx_network
   rq:
-    image: "rq??"
+    build: rq.Dockerfile
+    command: rq worker
+  rq-dashboard:
+    build: rq.Dockerfile
+    command: rq-dashboard -H rq-server # ?
   nginx:
     image: "nginx:alpine"
     ports:
@@ -33,3 +41,10 @@ services:
       - web
     networks:
       - nginx_network
+
+networks:
+  nginx_network
+
+volumes:
+  static_volume:  # <-- declare the static volume
+  media_volume:  # <-- declare the media volume
