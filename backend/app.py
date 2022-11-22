@@ -1,5 +1,5 @@
 import os
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from time import sleep
@@ -8,52 +8,32 @@ import requests
 from redis import Redis
 from rq.command import send_stop_job_command
 from rq.registry import StartedJobRegistry
-from rq.suspension import suspend
+from rq.suspension import suspend, resume
 import sqlite3
 
-# TODO: A play function (start the python script)
-# TODO: A queue system? Let the scripts run for X time before next one?
-# TODO: https://stackoverflow.com/questions/62432369/flask-how-to-terminate-a-python-subprocess
-# TODO: https://python-rq.org/docs/scheduling/
+from models import *
 
 # TODO: provide arguments when starting the app to run in debug env file or not
 load_dotenv(".env.debug")
 
+# Config
+UPLOAD_FOLDER = '../uploads'
+ALLOWED_EXTENSIONS = {'py'}
+TEMPLATE_DIR = os.path.abspath('../frontend')
 
-def report_failure(job, connection, type, value, traceback):
-    pass
-
-def get_db_connection():
-    conn = sqlite3.connect('database.db')
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def get_all_files_from_db():
-    conn = get_db_connection()
-    files = conn.execute('SELECT * FROM christmas_files').fetchall()
-    conn.close()
-    return files
-
-
-# Tell RQ what Redis connection to use
+# RQ
 redis_conn = Redis()
 q = Queue('christmasLightsQueue', connection=redis_conn)  # no args implies the default queue
 
-
-UPLOAD_FOLDER = '../uploads'
-ALLOWED_EXTENSIONS = {'py'}
-
-template_dir = os.path.abspath('../frontend')
-app = Flask(__name__, template_folder=template_dir)
-
+# App setup
+app = Flask(__name__, template_folder=TEMPLATE_DIR)
 app.config.from_mapping(
         SECRET_KEY='dev',
-        #DATABASE=os.path.join(app.instance_path, 'flaskr.sqlite'),
         UPLOAD_FOLDER=UPLOAD_FOLDER
-    )
+)
 
 
-
+# Routes
 @app.route("/")
 def index():
     return render_template('app.html')
@@ -71,45 +51,33 @@ def upload_file():
         if file.filename == '':
             flash('No selected file')
             return redirect(request.url)
+
         if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
             file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+            # TODO: Add the file to the test queue
             return redirect(url_for('after_upload', filename=filename))
-    return '''
-    <!doctype html>
-    <title>Upload new File</title>
-    <h1>Upload new File</h1>
-    <form method=post enctype=multipart/form-data>
-      <input type=file name=file>
-      <input type=submit value=Upload>
-    </form>
-    '''
+
+    return render_template('upload.html')
+
 
 @app.route("/after_upload/<filename>")
 def after_upload(filename=""):
+    # TODO: IF it has not been tested yet, print out: "Waiting for tests to finish..."
+        # Check in database I guess
+    # TODO: ELSE if finished, print out: "TEST PASSED, Now you can play it. <Go to app.>"
+        
     return "hej " + filename
 
-
-
-
-def run_file(file=None):
-    # Run the file.. which could, or could not, loop forever
-    pass
-
-
-
-
-@app.route("/file_list")
-def file_list():
-    # return file list from database as JSON
-    pass
+@app.route("/get_all_uploaded_files")
+def get_all_uploaded_files():
+    files = query_all_uploaded_files() # TODO
+    return jsonify(files)
 
 # CONTROLS
 # What do I need a database for?
     # UPLOADED-TABLE: to keep track of uploaded files: name, by who, when, Rating, how many times it was played
     # PLAYLIST-TABLE: to keep track of the queue (actually do I need this? or just use rq?)
-    # (MAYBE LATER) PLAYED-TABLE: 
-    # DB: SQLite
 
 # Frontend lists the uploaded files from UPLOADED-TABLE, every one has the buttons:
     # PlayNow (play it now, stop current one if there is one running)
@@ -122,20 +90,8 @@ def file_list():
     # Shows currently playing with some animation
     # queue icon: Lists the current queue in a popup
     # play/stop on the same button (this just stops, but does not remove the current item)
-        # Suspend worker
-            # If there is currently a job running: this will work ok
-            # If there is not currently a job running: then it will suspend after running the next job
-                # Fix by: check first if there is a job running, and don't do anything if not
-        # Add current job at_front in queue (get from database)
-        # Stop current job
-    # Prev (MAYBE IMPLEMENT LATER)
-        # stop current job
-        # Add the last item from PLAYED-TABLE to at_front in queue
     # Next
-        # Stop current job
-            # First check if there is a job running, if not, do nothnig
     # Clear list
-        # Clear all jobs in queue
 
 
 
@@ -160,65 +116,101 @@ def file_list():
     # job_timeout=(maximum runtime before it is forced to "fail")
     # ttl=(max time a job is in queue)
     # at_front=True
-    # on_success=
-    # on_failure=
+    # on_success=update_frontend
+    # on_failure=update_frontend
     # description="asd"
 
-@app.route("/playNow", methods=["GET"]) #TODO: GET or just "file" argument
-def playNow(file="test.py"):
-    # Place this job as the first one in queue
+@app.route("/get_playlist")
+def get_playlist():
     # TODO
-    if isinstance(file, str):
-        job = q.enqueue(
-            run_file, 
-            args=(file,), 
-            description=file, 
-            at_front=True,
-            on_failure=report_failure,
-            on_success=success,
-            job_timeout=999999
-            ) 
+    # Get the current queue from RQ, which has file name in description
+    # get all uploaded files
+    files = query_all_uploaded_files() # TODO
+    playlist = []
+    # for each item in queue
+        # metadata = files['filename'].metadata
+        # playlist.append(metadata)
+    return jsonify(playlist)
 
-    # Stop current running job
-    registry = StartedJobRegistry(connection=redis_conn)
-    running_job_ids = registry.get_job_ids()
-    current_job = running_job_ids[0] # with one running worker
-    send_stop_job_command(redis_conn, current_job)
+@app.route("/play_now", methods=["GET"])
+def play_now():
+    # Place this job as the first one in queue
+    if request.method == 'GET':
+        if isinstance(request.data.file, str):
+            job = q.enqueue(
+                run_file, 
+                args=(request.data.file,), 
+                description=request.data.file, 
+                at_front=True,
+                on_failure=report_failure,
+                on_success=success,
+                job_timeout=999999
+                ) 
 
-    return "something"
+        # Stop current running job
+        registry = StartedJobRegistry(connection=redis_conn)
+        running_job_ids = registry.get_job_ids()
+        if len(running_job_ids) > 0:
+            current_job_id = running_job_ids[0] # with one running worker
+            send_stop_job_command(redis_conn, current_job_id)
+
+    return "something" # TODO
 
 @app.route("/play")
 def play():
-    # resume
-    pass
+    result = resume(connection=redis_conn)
+    return result # True if resumed, False if already resumed I guess
 
 @app.route("/stop")
 def stop():
+    registry = StartedJobRegistry(connection=redis_conn)
+    running_job_ids = registry.get_job_ids()
     # IF there is currently a job running:
+    if len(running_job_ids) > 0:
         # get current job id / file name
+        current_job_id = running_job_ids[0] # with one running worker
         # enqueue filerun(filename) at_front of queue
+        # TODO: get filename from playlist by filtering by job id?
+        # TODO: enqueue
+        # job = q.enqueue(
+        #         run_file, 
+        #         args=(request.data.file,), 
+        #         description=request.data.file, 
+        #         at_front=True,
+        #         on_failure=report_failure,
+        #         on_success=success,
+        #         job_timeout=999999
+        #     ) 
         # suspend IF not already suspended
+        suspend(connection=redis_conn)
         # stop current job
+        send_stop_job_command(redis_conn, current_job_id)
     pass
 
 @app.route("/next")
 def next():
-    # stop current job
+    registry = StartedJobRegistry(connection=redis_conn)
+    running_job_ids = registry.get_job_ids()
+    if len(running_job_ids) > 0:
+        current_job_id = running_job_ids[0] # with one running worker
+        send_stop_job_command(redis_conn, current_job_id)
     pass
 
-@app.route("/enqueue")
+@app.route("/enqueue", methods=["GET"])
 def enqueue():
-    # Add to queue
-    pass
+    if request.method == "GET":
+        job = q.enqueue(
+            run_file, 
+            args=(request.data.file,), 
+            description=request.data.file, 
+            at_front=True,
+            on_failure=report_failure,
+            on_success=success,
+            job_timeout=999999
+        ) 
+    return jsonify(job)
 
 @app.route("/clear")
 def clear():
-    # clear the whole queue
+    q.empty()
     pass
-
-def success():
-    pass
-
-def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS

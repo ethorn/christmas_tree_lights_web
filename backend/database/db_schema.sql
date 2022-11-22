@@ -5,5 +5,6 @@ CREATE TABLE christmas_files (
     uploaded TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     title TEXT NOT NULL,
     file_name TEXT NOT NULL,
-    uploaded_by TEXT NOT NULL
+    uploaded_by TEXT NOT NULL,
+    test TEXT NOT NULL
 );
