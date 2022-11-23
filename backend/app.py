@@ -4,7 +4,6 @@ from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from time import sleep
 from rq import Queue, Worker
-import requests
 from redis import Redis
 from rq.command import send_stop_job_command
 from rq.registry import StartedJobRegistry
@@ -33,10 +32,23 @@ app.config.from_mapping(
 )
 
 
+
+
+
+# TODO: Se på SOCKET.IO for å oppdatere frontend med updates fra backend
+
+
+
 # Routes
 @app.route("/")
 def index():
+    # TODO: Get all data from playlist and files, and pass them on to the template for Jinja
+    # TODO: OR, just call these things from the Frontend?
     return render_template('app.html')
+
+@app.route("/security")
+def security():
+    return render_template('security.html') # TODO
 
 @app.route("/upload", methods=['POST', 'GET'])
 def upload_file():
@@ -46,20 +58,19 @@ def upload_file():
             flash('No file part')
             return redirect(request.url)
         file = request.files['file']
-        # If the user does not select a file, the browser submits an
-        # empty file without a filename.
+
+        # If the user does not select a file, the browser submits an empty file without a filename.
         if file.filename == '':
             flash('No selected file')
             return redirect(request.url)
 
         if file and allowed_file(file.filename):
-            filename = secure_filename(file.filename)
+            filename = secure_filename(file.filename) #TODO: Allow unsecure filenames?
             file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
             # TODO: Add the file to the test queue
             return redirect(url_for('after_upload', filename=filename))
 
     return render_template('upload.html')
-
 
 @app.route("/after_upload/<filename>")
 def after_upload(filename=""):
@@ -69,10 +80,24 @@ def after_upload(filename=""):
         
     return "hej " + filename
 
-@app.route("/get_all_uploaded_files")
-def get_all_uploaded_files():
-    files = query_all_uploaded_files() # TODO
-    return jsonify(files)
+@app.route("/files")
+@app.route("/files/<id:int>", methods=['GET', 'DELETE'])
+def files(id=None):
+    if request.method == "GET" and id is None:
+        files = query_all_files() # TODO
+        return jsonify(files)
+    elif request.method == "GET" and id is int:
+        file = query_file(id=id) # TODO
+        return jsonify(file)
+    elif request.method == "DELETE":
+        result = delete_file(id=id) # TODO
+        return jsonify(result)
+
+# @app.route("files/<id>/play")
+# def play_file():
+#     result = resume(connection=redis_conn)
+#     return result # True if resumed, False if already resumed I guess
+    
 
 # CONTROLS
 # What do I need a database for?
@@ -120,74 +145,36 @@ def get_all_uploaded_files():
     # on_failure=update_frontend
     # description="asd"
 
-@app.route("/get_playlist")
-def get_playlist():
-    # TODO
-    # Get the current queue from RQ, which has file name in description
-    # get all uploaded files
-    files = query_all_uploaded_files() # TODO
-    playlist = []
-    # for each item in queue
-        # metadata = files['filename'].metadata
-        # playlist.append(metadata)
-    return jsonify(playlist)
+@app.route("/playlist", methods=["GET", "POST"])
+def playlist():
+    if request.method == "GET":
+        queued_jobs = q.jobs
+        playlist = []
+        for job in queued_jobs:
+            playlist.append(job.meta)
+        return jsonify(playlist)
 
-@app.route("/play_now", methods=["GET"])
-def play_now():
-    # Place this job as the first one in queue
-    if request.method == 'GET':
+    elif request.method == "POST":
         if isinstance(request.data.file, str):
+            # TODO: CHECK IF FILE IS IN FILE LIST IN DATABASE?
             job = q.enqueue(
                 run_file, 
                 args=(request.data.file,), 
                 description=request.data.file, 
                 at_front=True,
-                on_failure=report_failure,
-                on_success=success,
-                job_timeout=999999
+                on_failure=report_failure, # TODO
+                on_success=success, # TODO
+                job_timeout=999999 # TODO
                 ) 
-
         # Stop current running job
         registry = StartedJobRegistry(connection=redis_conn)
         running_job_ids = registry.get_job_ids()
         if len(running_job_ids) > 0:
             current_job_id = running_job_ids[0] # with one running worker
             send_stop_job_command(redis_conn, current_job_id)
+        return "something" # TODO
 
-    return "something" # TODO
-
-@app.route("/play")
-def play():
-    result = resume(connection=redis_conn)
-    return result # True if resumed, False if already resumed I guess
-
-@app.route("/stop")
-def stop():
-    registry = StartedJobRegistry(connection=redis_conn)
-    running_job_ids = registry.get_job_ids()
-    # IF there is currently a job running:
-    if len(running_job_ids) > 0:
-        # get current job id / file name
-        current_job_id = running_job_ids[0] # with one running worker
-        # enqueue filerun(filename) at_front of queue
-        # TODO: get filename from playlist by filtering by job id?
-        # TODO: enqueue
-        # job = q.enqueue(
-        #         run_file, 
-        #         args=(request.data.file,), 
-        #         description=request.data.file, 
-        #         at_front=True,
-        #         on_failure=report_failure,
-        #         on_success=success,
-        #         job_timeout=999999
-        #     ) 
-        # suspend IF not already suspended
-        suspend(connection=redis_conn)
-        # stop current job
-        send_stop_job_command(redis_conn, current_job_id)
-    pass
-
-@app.route("/next")
+@app.route("/playlist/next") # TODO: POST? GET?
 def next():
     registry = StartedJobRegistry(connection=redis_conn)
     running_job_ids = registry.get_job_ids()
@@ -196,9 +183,9 @@ def next():
         send_stop_job_command(redis_conn, current_job_id)
     pass
 
-@app.route("/enqueue", methods=["GET"])
+@app.route("/playlist/enqueue", methods=["POST"]) # TODO: Have it under files OR playlist as POST
 def enqueue():
-    if request.method == "GET":
+    if request.method == "POST":
         job = q.enqueue(
             run_file, 
             args=(request.data.file,), 
@@ -210,7 +197,57 @@ def enqueue():
         ) 
     return jsonify(job)
 
-@app.route("/clear")
+@app.route("playlist/play", methods=["POST"])
+def play():
+    if request.method == "POST":
+        result = resume(connection=redis_conn)
+        return result # True if resumed, False if already resumed I guess
+
+@app.route("playlist/stop", methods=["POST"])
+def stop():
+    if request.method == "POST":
+        registry = StartedJobRegistry(connection=redis_conn)
+        running_job_ids = registry.get_job_ids()
+        # IF there is currently a job running:
+        if len(running_job_ids) > 0:
+            # get current job id / file name
+            current_job_id = running_job_ids[0] # with one running worker
+            # enqueue filerun(filename) at_front of queue
+            # TODO: get filename from playlist by filtering by job id?
+            # TODO: enqueue
+            # job = q.enqueue(
+            #         run_file, 
+            #         args=(request.data.file,), 
+            #         description=request.data.file, 
+            #         at_front=True,
+            #         on_failure=report_failure,
+            #         on_success=success,
+            #         job_timeout=999999
+            #     ) 
+            # suspend IF not already suspended
+            suspend(connection=redis_conn)
+            # stop current job
+            send_stop_job_command(redis_conn, current_job_id)
+    pass
+
+@app.route("/playlist/<id>", methods=["DELETE"])
+def delete_playlist_item():
+    # TODO
+    pass
+
+@app.route("/playlist/<id>/play", methods=["POST"])
+def play_playlist_item():
+    # TODO: Remove everyone before
+    # TODO: Abort current job
+    # (Now this one should be playing)
+    pass
+
+@app.route("/playlist/clear", method=["POST"])
 def clear():
     q.empty()
     pass
+
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
